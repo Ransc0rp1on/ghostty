@@ -14,6 +14,7 @@ const config_sublime_syntax = @import("src/config/sublime_syntax.zig");
 const fish_completions = @import("src/build/fish_completions.zig");
 const zsh_completions = @import("src/build/zsh_completions.zig");
 const bash_completions = @import("src/build/bash_completions.zig");
+const gtk = @import("src/build/gtk.zig");
 const build_config = @import("src/build_config.zig");
 const BuildConfig = build_config.BuildConfig;
 const WasmTarget = @import("src/os/wasm/target.zig").Target;
@@ -60,17 +61,19 @@ pub fn build(b: *std.Build) !void {
 
         break :target result;
     };
+    const wasm_target: WasmTarget = .browser;
 
     // This is set to true when we're building a system package. For now
     // this is trivially detected using the "system_package_mode" bool
     // but we may want to make this more sophisticated in the future.
     const system_package: bool = b.graph.system_package_mode;
 
-    const wasm_target: WasmTarget = .browser;
-
     // We use env vars throughout the build so we grab them immediately here.
     var env = try std.process.getEnvMap(b.allocator);
     defer env.deinit();
+
+    // Get our targets for GTK4.
+    const gtk_targets = gtk.targets(b);
 
     // Our build configuration. This is all on a struct so that we can easily
     // modify it for specific build types (for example, wasm we strictly
@@ -107,64 +110,17 @@ pub fn build(b: *std.Build) !void {
         "Enables the use of Adwaita when using the GTK rendering backend.",
     ) orelse true;
 
-    var x11 = false;
-    var wayland = false;
-
-    if (target.result.os.tag == .linux) pkgconfig: {
-        var pkgconfig = std.process.Child.init(&.{ "pkg-config", "--variable=targets", "gtk4" }, b.allocator);
-
-        pkgconfig.stdout_behavior = .Pipe;
-        pkgconfig.stderr_behavior = .Pipe;
-
-        pkgconfig.spawn() catch |err| {
-            std.log.warn("failed to spawn pkg-config - disabling X11 and Wayland integrations: {}", .{err});
-            break :pkgconfig;
-        };
-
-        const output_max_size = 50 * 1024;
-
-        var stdout = std.ArrayList(u8).init(b.allocator);
-        var stderr = std.ArrayList(u8).init(b.allocator);
-        defer {
-            stdout.deinit();
-            stderr.deinit();
-        }
-
-        try pkgconfig.collectOutput(&stdout, &stderr, output_max_size);
-
-        const term = try pkgconfig.wait();
-
-        if (stderr.items.len > 0) {
-            std.log.warn("pkg-config had errors:\n{s}", .{stderr.items});
-        }
-
-        switch (term) {
-            .Exited => |code| {
-                if (code == 0) {
-                    if (std.mem.indexOf(u8, stdout.items, "x11")) |_| x11 = true;
-                    if (std.mem.indexOf(u8, stdout.items, "wayland")) |_| wayland = true;
-                } else {
-                    std.log.warn("pkg-config: {s} with code {d}", .{ @tagName(term), code });
-                }
-            },
-            inline else => |code| {
-                std.log.warn("pkg-config: {s} with code {d}", .{ @tagName(term), code });
-                return error.Unexpected;
-            },
-        }
-    }
-
     config.x11 = b.option(
         bool,
         "gtk-x11",
         "Enables linking against X11 libraries when using the GTK rendering backend.",
-    ) orelse x11;
+    ) orelse gtk_targets.x11;
 
     config.wayland = b.option(
         bool,
         "gtk-wayland",
         "Enables linking against Wayland libraries when using the GTK rendering backend.",
-    ) orelse wayland;
+    ) orelse gtk_targets.wayland;
 
     config.sentry = b.option(
         bool,
